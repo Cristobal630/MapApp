@@ -26,11 +26,17 @@
         android:layout_height="wrap_content"
         android:textColor="@android:color/black" />
 
+    <TextView
+        android:id="@+id/info_rating"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textColor="@android:color/black" />
+
     <LinearLayout
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="center_horizontal"
-        android:orientation="horizontal">
+        android.orientation="horizontal">
 
         <Button
             android:id="@+id/info_edit_button"
@@ -43,5 +49,11 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="Eliminar" />
+
+        <Button
+            android:id="@+id/info_rate_button"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Calificar" />
     </LinearLayout>
 </LinearLayout>

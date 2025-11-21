@@ -3,7 +3,6 @@ package com.example.appmap;
 import android.Manifest;
 import android.content.Context;
 import android.content.pm.PackageManager;
-import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
 import android.os.Bundle;
@@ -14,8 +13,10 @@ import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.RatingBar;
 import android.widget.Spinner;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AlertDialog;
@@ -23,10 +24,14 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 
 import com.google.android.material.floatingactionbutton.FloatingActionButton;
+import com.google.firebase.auth.FirebaseAuth;
+import com.google.firebase.auth.FirebaseUser;
+import com.google.firebase.database.DataSnapshot;
+import com.google.firebase.database.DatabaseError;
+import com.google.firebase.database.DatabaseReference;
+import com.google.firebase.database.FirebaseDatabase;
+import com.google.firebase.database.ValueEventListener;
 
-import org.json.JSONArray;
-import org.json.JSONException;
-import org.json.JSONObject;
 import org.osmdroid.config.Configuration;
 import org.osmdroid.events.MapEventsReceiver;
 import org.osmdroid.util.GeoPoint;
@@ -37,20 +42,12 @@ import org.osmdroid.views.overlay.compass.CompassOverlay;
 import org.osmdroid.views.overlay.compass.InternalCompassOrientationProvider;
 import org.osmdroid.views.overlay.infowindow.InfoWindow;
 
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.List;
 
 public class MainActivity extends AppCompatActivity implements LocationListener {
 
     private MapView map;
-    private JSONArray locationsArray;
     private LocationManager locationManager;
     private GeoPoint myLocation;
     private Marker myLocationMarker;
@@ -60,6 +57,9 @@ public class MainActivity extends AppCompatActivity implements LocationListener 
     private Spinner statusFilterSpinner;
     private String currentDistanceFilter = "Mundial";
     private String currentStatusFilter = "Todos";
+    private DatabaseReference locationsRef;
+    private List<Location> allLocations = new ArrayList<>();
+    private FirebaseUser currentUser;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -69,6 +69,9 @@ public class MainActivity extends AppCompatActivity implements LocationListener 
                 PreferenceManager.getDefaultSharedPreferences(getApplicationContext()));
 
         setContentView(R.layout.activity_main);
+
+        currentUser = FirebaseAuth.getInstance().getCurrentUser();
+        locationsRef = FirebaseDatabase.getInstance().getReference("locations");
 
         map = findViewById(R.id.map);
         map.setMultiTouchControls(true);
@@ -88,7 +91,8 @@ public class MainActivity extends AppCompatActivity implements LocationListener 
             }
         });
 
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED && ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
+                ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION}, 1);
         } else {
             setupLocation();
@@ -107,10 +111,11 @@ public class MainActivity extends AppCompatActivity implements LocationListener 
                 return true;
             }
         };
-        MapEventsOverlay OverlayEvents = new MapEventsOverlay(mReceive);
-        map.getOverlays().add(0, OverlayEvents); // Add at the beginning
 
-        loadLocations();
+        MapEventsOverlay OverlayEvents = new MapEventsOverlay(mReceive);
+        map.getOverlays().add(0, OverlayEvents);
+
+        loadLocationsFromFirebase();
     }
 
     private void setupFilters() {
@@ -149,7 +154,7 @@ public class MainActivity extends AppCompatActivity implements LocationListener 
     }
 
     @Override
-    public void onLocationChanged(Location location) {
+    public void onLocationChanged(android.location.Location location) {
         myLocation = new GeoPoint(location.getLatitude(), location.getLongitude());
         if (isFirstLocationUpdate && map != null) {
             map.getController().setCenter(myLocation);
@@ -172,9 +177,9 @@ public class MainActivity extends AppCompatActivity implements LocationListener 
             myLocationMarker.setIcon(getResources().getDrawable(android.R.drawable.ic_menu_send));
             map.getOverlays().add(myLocationMarker);
         } else {
-             if(!map.getOverlays().contains(myLocationMarker)){
-                  map.getOverlays().add(myLocationMarker);
-             }
+            if (!map.getOverlays().contains(myLocationMarker)) {
+                map.getOverlays().add(myLocationMarker);
+            }
         }
         myLocationMarker.setPosition(myLocation);
         myLocationMarker.setRotation(bearing);
@@ -212,167 +217,98 @@ public class MainActivity extends AppCompatActivity implements LocationListener 
             String newTitle = editTitle.getText().toString();
             String newDescription = editDescription.getText().toString();
             String newStatus = statusSpinner.getSelectedItem().toString();
-            saveLocation(newTitle, newStatus, newDescription, p, true, null);
+            String id = locationsRef.push().getKey();
+            Location newLocation = new Location(id, newTitle, newDescription, newStatus, p.getLatitude(), p.getLongitude(), true);
+            saveLocation(newLocation);
         });
         builder.setNegativeButton("Cancelar", (dialog, which) -> dialog.cancel());
 
         builder.show();
     }
 
-    private void saveLocation(String title, String status, String description, GeoPoint p, boolean isPublic, JSONObject existingLocation) {
-        try {
-            JSONObject locationToSave;
-            if (existingLocation == null) {
-                locationToSave = new JSONObject();
-            } else {
-                locationToSave = existingLocation;
-            }
-
-            locationToSave.put("title", title);
-            locationToSave.put("estado", status);
-            locationToSave.put("descripcion", description);
-            locationToSave.put("latitude", p.getLatitude());
-            locationToSave.put("longitude", p.getLongitude());
-            locationToSave.put("es_publico", isPublic);
-
-            if (existingLocation == null) {
-                locationsArray.put(locationToSave);
-            }
-
-            writeLocationsToFile();
-            refreshMarkers();
-
-        } catch (JSONException e) {
-            e.printStackTrace();
-        }
+    private void saveLocation(Location location) {
+        locationsRef.child(location.id).setValue(location);
     }
 
-    private void deleteLocation(JSONObject locationToDelete) {
-         new AlertDialog.Builder(this)
+    private void deleteLocation(Location locationToDelete) {
+        new AlertDialog.Builder(this)
                 .setTitle("Eliminar Ubicación")
                 .setMessage("¿Estás seguro de que quieres eliminar esta ubicación?")
                 .setPositiveButton("Eliminar", (dialog, which) -> {
-                    JSONArray newArray = new JSONArray();
-                    for (int i = 0; i < locationsArray.length(); i++) {
-                        try {
-                            if (!locationsArray.getJSONObject(i).toString().equals(locationToDelete.toString())) {
-                                newArray.put(locationsArray.getJSONObject(i));
-                            }
-                        } catch (JSONException e) {
-                            e.printStackTrace();
-                        }
-                    }
-                    locationsArray = newArray;
-                    writeLocationsToFile();
-                    refreshMarkers();
+                    locationsRef.child(locationToDelete.id).removeValue();
                 })
                 .setNegativeButton("Cancelar", null)
                 .show();
     }
 
-    private void loadLocations() {
-        try {
-            File file = new File(getFilesDir(), "locations.json");
-            InputStream is;
-            if (file.exists() && file.length() > 0) {
-                is = new FileInputStream(file);
-            } else {
-                is = getResources().openRawResource(R.raw.locations);
-                FileOutputStream fos = openFileOutput("locations.json", Context.MODE_PRIVATE);
-                byte[] buffer = new byte[1024];
-                int bytesRead;
-                while ((bytesRead = is.read(buffer)) != -1) {
-                    fos.write(buffer, 0, bytesRead);
+    private void loadLocationsFromFirebase() {
+        locationsRef.addValueEventListener(new ValueEventListener() {
+            @Override
+            public void onDataChange(@NonNull DataSnapshot dataSnapshot) {
+                allLocations.clear();
+                for (DataSnapshot snapshot : dataSnapshot.getChildren()) {
+                    Location location = snapshot.getValue(Location.class);
+                    if (location != null) {
+                        allLocations.add(location);
+                    }
                 }
-                fos.close();
-                is.close();
-                is = new FileInputStream(file);
+                refreshMarkers();
             }
 
-            BufferedReader reader = new BufferedReader(new InputStreamReader(is));
-            StringBuilder sb = new StringBuilder();
-            String line;
-            while ((line = reader.readLine()) != null) {
-                sb.append(line);
+            @Override
+            public void onCancelled(@NonNull DatabaseError databaseError) {
+                Toast.makeText(MainActivity.this, "Failed to load locations.", Toast.LENGTH_SHORT).show();
             }
-            is.close();
-
-            locationsArray = new JSONArray(sb.toString());
-            refreshMarkers();
-
-        } catch (IOException | JSONException e) {
-            e.printStackTrace();
-            locationsArray = new JSONArray();
-        }
-    }
-
-    private void writeLocationsToFile() {
-        try {
-            FileOutputStream fos = openFileOutput("locations.json", Context.MODE_PRIVATE);
-            fos.write(locationsArray.toString(2).getBytes());
-            fos.close();
-        } catch (IOException | JSONException e) {
-            e.printStackTrace();
-        }
+        });
     }
 
     private void refreshMarkers() {
         if (map == null) return;
         List<org.osmdroid.views.overlay.Overlay> overlaysToKeep = new ArrayList<>();
-        for (org.osmdroid.views.overlay.Overlay overlay : map.getOverlays()){
+        for (org.osmdroid.views.overlay.Overlay overlay : map.getOverlays()) {
             if (overlay instanceof MapEventsOverlay || overlay instanceof CompassOverlay || overlay == myLocationMarker) {
-                 overlaysToKeep.add(overlay);
+                overlaysToKeep.add(overlay);
             }
         }
         map.getOverlays().clear();
         map.getOverlays().addAll(overlaysToKeep);
 
-        try {
-            for (int i = 0; i < locationsArray.length(); i++) {
-                JSONObject location = locationsArray.getJSONObject(i);
+        for (Location location : allLocations) {
+            if (!currentStatusFilter.equals("Todos") && !location.estado.equals(currentStatusFilter)) {
+                continue;
+            }
 
-                if (!currentStatusFilter.equals("Todos") && !location.getString("estado").equals(currentStatusFilter)) {
+            GeoPoint point = new GeoPoint(location.latitude, location.longitude);
+
+            if (currentDistanceFilter.equals("Por Zona (4km)")) {
+                if (myLocation == null) continue;
+                android.location.Location loc1 = new android.location.Location("");
+                loc1.setLatitude(myLocation.getLatitude());
+                loc1.setLongitude(myLocation.getLongitude());
+
+                android.location.Location loc2 = new android.location.Location("");
+                loc2.setLatitude(point.getLatitude());
+                loc2.setLongitude(point.getLongitude());
+
+                if (loc1.distanceTo(loc2) > 4000) {
                     continue;
                 }
-
-                GeoPoint point = new GeoPoint(location.getDouble("latitude"), location.getDouble("longitude"));
-
-                if (currentDistanceFilter.equals("Por Zona (4km)")) {
-                    if (myLocation == null) continue;
-                    Location loc1 = new Location("");
-                    loc1.setLatitude(myLocation.getLatitude());
-                    loc1.setLongitude(myLocation.getLongitude());
-
-                    Location loc2 = new Location("");
-                    loc2.setLatitude(point.getLatitude());
-                    loc2.setLongitude(point.getLongitude());
-
-                    if (loc1.distanceTo(loc2) > 4000) {
-                        continue;
-                    }
-                }
-                addMarker(point, location);
             }
-        } catch (JSONException e) {
-            e.printStackTrace();
+            addMarker(point, location);
         }
         map.invalidate();
     }
 
-    private void addMarker(GeoPoint p, final JSONObject location) {
+    private void addMarker(GeoPoint p, final Location location) {
         Marker marker = new Marker(map);
         marker.setPosition(p);
         marker.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM);
-        try {
-            marker.setTitle(location.getString("title"));
-            marker.setInfoWindow(new CustomInfoWindow(R.layout.custom_info_window, map, location));
-        } catch (JSONException e) {
-            e.printStackTrace();
-        }
+        marker.setTitle(location.title);
+        marker.setInfoWindow(new CustomInfoWindow(R.layout.custom_info_window, map, location));
         map.getOverlays().add(marker);
     }
 
-    private void showEditLocationDialog(final JSONObject location) {
+    private void showEditLocationDialog(final Location location) {
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
         builder.setTitle("Editar Ubicación");
 
@@ -389,31 +325,47 @@ public class MainActivity extends AppCompatActivity implements LocationListener 
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         statusSpinner.setAdapter(adapter);
 
-        try {
-            editTitle.setText(location.getString("title"));
-            editDescription.setText(location.getString("descripcion"));
-            String status = location.getString("estado");
-            if (status != null) {
-                int spinnerPosition = adapter.getPosition(status);
-                statusSpinner.setSelection(spinnerPosition);
-            }
-        } catch (JSONException e) {
-            e.printStackTrace();
+        editTitle.setText(location.title);
+        editDescription.setText(location.descripcion);
+        if (location.estado != null) {
+            int spinnerPosition = adapter.getPosition(location.estado);
+            statusSpinner.setSelection(spinnerPosition);
         }
 
         builder.setPositiveButton("Guardar", (dialog, which) -> {
-            try {
-                String newTitle = editTitle.getText().toString();
-                String newDescription = editDescription.getText().toString();
-                String newStatus = statusSpinner.getSelectedItem().toString();
-                GeoPoint point = new GeoPoint(location.getDouble("latitude"), location.getDouble("longitude"));
-                boolean isPublic = location.getBoolean("es_publico");
+            location.title = editTitle.getText().toString();
+            location.descripcion = editDescription.getText().toString();
+            location.estado = statusSpinner.getSelectedItem().toString();
+            saveLocation(location);
+        });
+        builder.setNegativeButton("Cancelar", (dialog, which) -> dialog.cancel());
 
-                saveLocation(newTitle, newStatus, newDescription, point, isPublic, location);
+        builder.show();
+    }
 
-            } catch (JSONException e) {
-                e.printStackTrace();
+    private void showRatingDialog(final Location location) {
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle("Calificar y Comentar");
+
+        LayoutInflater inflater = getLayoutInflater();
+        View dialogView = inflater.inflate(R.layout.rating_dialog, null);
+        builder.setView(dialogView);
+
+        final RatingBar ratingBar = dialogView.findViewById(R.id.rating_bar);
+        final EditText commentText = dialogView.findViewById(R.id.comment_text);
+
+        builder.setPositiveButton("Enviar", (dialog, which) -> {
+            float rating = ratingBar.getRating();
+            String comment = commentText.getText().toString();
+            String userId = currentUser.getUid();
+
+            if (rating > 0) {
+                location.ratings.put(userId, rating);
             }
+            if (!comment.isEmpty()) {
+                location.comments.put(userId, comment);
+            }
+            saveLocation(location);
         });
         builder.setNegativeButton("Cancelar", (dialog, which) -> dialog.cancel());
 
@@ -421,9 +373,9 @@ public class MainActivity extends AppCompatActivity implements LocationListener 
     }
 
     private class CustomInfoWindow extends InfoWindow {
-        private final JSONObject location;
+        private final Location location;
 
-        public CustomInfoWindow(int layoutResId, MapView mapView, JSONObject location) {
+        public CustomInfoWindow(int layoutResId, MapView mapView, Location location) {
             super(layoutResId, mapView);
             this.location = location;
         }
@@ -433,16 +385,15 @@ public class MainActivity extends AppCompatActivity implements LocationListener 
             TextView title = mView.findViewById(R.id.info_title);
             TextView description = mView.findViewById(R.id.info_description);
             TextView status = mView.findViewById(R.id.info_status);
+            TextView ratingText = mView.findViewById(R.id.info_rating);
             Button editButton = mView.findViewById(R.id.info_edit_button);
             Button deleteButton = mView.findViewById(R.id.info_delete_button);
+            Button rateButton = mView.findViewById(R.id.info_rate_button);
 
-            try {
-                title.setText(location.getString("title"));
-                description.setText(location.getString("descripcion"));
-                status.setText("Estado: " + location.getString("estado"));
-            } catch (JSONException e) {
-                e.printStackTrace();
-            }
+            title.setText(location.title);
+            description.setText(location.descripcion);
+            status.setText("Estado: " + location.estado);
+            ratingText.setText(String.format("Calificación: %.1f", location.getAverageRating()));
 
             editButton.setOnClickListener(v -> {
                 showEditLocationDialog(location);
@@ -451,6 +402,11 @@ public class MainActivity extends AppCompatActivity implements LocationListener 
 
             deleteButton.setOnClickListener(v -> {
                 deleteLocation(location);
+                close();
+            });
+
+            rateButton.setOnClickListener(v -> {
+                showRatingDialog(location);
                 close();
             });
         }
